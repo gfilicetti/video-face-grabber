@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Video Face Grab — Best Frame Identity Extractor for Cloud Storage</title>
+  <meta
+    name="description"
+    content="Upload a video to detect every discernable human face, automatically select each person's sharpest and clearest frame, and export lossless PNGs to Google Cloud Storage."
+  />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="container header-inner">
+      <div class="brand-group">
+        <span class="brand-mark" aria-hidden="true">VF</span>
+        <div>
+          <h1>Video Face Grab</h1>
+          <p class="subtitle">Identity-Clustered Best-Frame PNG Extractor for Google Cloud Storage</p>
+        </div>
+      </div>
+      <div class="storage-indicator" id="storage-indicator" role="status">
+        <span class="indicator-dot" id="storage-dot"></span>
+        <span id="storage-bucket-label">Checking storage target...</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="container main-layout">
+    <!-- Left / Top Column: Upload & Live Pipeline Status -->
+    <section class="control-column" aria-label="Video Upload and Processing Controls">
+      <div class="surface-panel upload-panel">
+        <div class="panel-header">
+          <h2>1. Source Video Upload</h2>
+          <span class="meta-tag">MP4 · MOV · WEBM · MKV</span>
+        </div>
+
+        <form id="upload-form" class="upload-form" novalidate>
+          <label
+            for="video-file-input"
+            id="drop-zone"
+            class="drop-zone"
+            tabindex="0"
+            aria-label="Select or drag and drop a video file"
+          >
+            <input
+              type="file"
+              id="video-file-input"
+              name="file"
+              accept=".mp4,.mov,.avi,.mkv,.webm,.m4v,video/*"
+              hidden
+            />
+            <div class="drop-zone-icon" aria-hidden="true">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75">
+                <path d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14v-4z" />
+                <rect x="3" y="6" width="12" height="12" rx="2" />
+              </svg>
+            </div>
+            <div class="drop-zone-copy">
+              <p class="drop-primary" id="selected-file-name">Drop a video file here or click to browse</p>
+              <p class="drop-secondary" id="selected-file-meta">
+                Each unique human face is clustered and saved as a lossless PNG in its own GCS run folder.
+              </p>
+            </div>
+          </label>
+
+          <div class="action-row">
+            <button type="submit" id="start-process-btn" class="primary-btn" disabled>
+              Extract Best Face Frames
+            </button>
+            <button type="button" id="reset-session-btn" class="secondary-btn" hidden>
+              New Video
+            </button>
+          </div>
+        </form>
+      </div>
+
+      <!-- Live Telemetry & Progress Panel -->
+      <div class="surface-panel telemetry-panel" id="telemetry-panel" aria-live="polite">
+        <div class="panel-header">
+          <h2>2. Pipeline Telemetry</h2>
+          <span class="status-badge" id="job-status-badge" data-state="idle">Idle</span>
+        </div>
+
+        <div class="gcs-destination-box">
+          <span class="gcs-label">Target GCS Folder Prefix</span>
+          <code class="gcs-uri" id="target-gcs-folder">gs://—/—</code>
+        </div>
+
+        <div class="progress-block">
+          <div class="progress-labels">
+            <span id="progress-stage-text">Waiting for video upload…</span>
+            <span class="mono-stat" id="progress-percent-text">0%</span>
+          </div>
+          <div
+            class="progress-track"
+            role="progressbar"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            aria-valuenow="0"
+            id="progress-bar-container"
+          >
+            <div class="progress-fill" id="progress-bar-fill" style="width: 0%"></div>
+          </div>
+        </div>
+
+        <dl class="metrics-strip">
+          <div class="metric-cell">
+            <dt>Frames Scanned</dt>
+            <dd id="metric-frames">0 / 0</dd>
+          </div>
+          <div class="metric-cell">
+            <dt>Video Timestamp</dt>
+            <dd id="metric-timestamp">0.00s</dd>
+          </div>
+          <div class="metric-cell">
+            <dt>Unique Humans</dt>
+            <dd id="metric-people">0</dd>
+          </div>
+          <div class="metric-cell">
+            <dt>Saved PNG Sets</dt>
+            <dd id="metric-saved">0</dd>
+          </div>
+        </dl>
+
+        <div class="activity-feed-wrapper">
+          <div class="feed-header">
+            <h3>Live Processing Stream</h3>
+            <span class="mono-stat" id="event-counter">0 events</span>
+          </div>
+          <ul class="activity-log" id="activity-log" aria-label="Real-time face processing events">
+            <li class="log-entry log-muted">Ready. Upload a video file to begin frame analysis.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- Right / Bottom Column: Discerned Human Faces Gallery -->
+    <section class="gallery-column" aria-label="Discerned Human Identities">
+      <div class="surface-panel gallery-panel">
+        <div class="panel-header gallery-header">
+          <div>
+            <h2>Discerned Human Identities</h2>
+            <p class="panel-caption">
+              Cards update in real time whenever a sharper, more front-facing frame is discovered for that person.
+            </p>
+          </div>
+          <span class="mono-stat" id="gallery-count-badge">0 identities</span>
+        </div>
+
+        <div id="empty-gallery-state" class="empty-gallery">
+          <p class="empty-title">No faces discerned yet</p>
+          <p class="empty-copy">
+            As the backend scans the video, each unique person will appear here with their live clarity score, sighting count, and final GCS PNG links.
+          </p>
+        </div>
+
+        <div id="faces-grid" class="faces-grid" role="region" aria-live="polite"></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Native HTML5 Dialog Lightbox for Full-Frame & Crop PNG Inspection -->
+  <dialog id="frame-inspector-modal" class="inspector-modal" aria-labelledby="modal-person-title">
+    <div class="modal-inner">
+      <div class="modal-header">
+        <div>
+          <h2 id="modal-person-title">Person #01 — Frame Inspection</h2>
+          <p class="mono-stat" id="modal-gcs-uri"></p>
+        </div>
+        <button type="button" id="close-modal-btn" class="icon-close-btn" aria-label="Close inspection dialog">
+          ✕
+        </button>
+      </div>
+      <div class="modal-body">
+        <figure class="modal-figure">
+          <img id="modal-preview-img" src="" alt="Full resolution PNG frame" />
+          <figcaption id="modal-caption"></figcaption>
+        </figure>
+      </div>
+    </div>
+  </dialog>
+
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

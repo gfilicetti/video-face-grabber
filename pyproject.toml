@@ -1,0 +1,9 @@
+[project]
+name = "video-face-grab"
+version = "1.0.0"
+description = "Cloud Run web application to extract and save the clearest frame of each discernable human face to GCS as PNG."
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
