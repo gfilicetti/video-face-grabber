@@ -6,6 +6,17 @@ import numpy as np
 
 
 @dataclass(frozen=True)
+class FacePoseAssessment:
+    """Geometric pose assessment from 5 facial landmarks (eyes, nose, mouth corners)."""
+
+    frontal_score: float
+    yaw_asymmetry: float
+    roll_degrees: float
+    pitch_deviation: float
+    is_forward_facing: bool
+
+
+@dataclass(frozen=True)
 class FaceQualityMetrics:
     """Breakdown of a single detected face's visual clarity and quality."""
 
@@ -15,6 +26,9 @@ class FaceQualityMetrics:
     confidence_score: float
     size_score: float
     raw_laplacian_var: float
+    yaw_asymmetry: float = 0.0
+    roll_degrees: float = 0.0
+    is_forward_facing: bool = True
 
 
 def compute_laplacian_sharpness(face_bgr: np.ndarray) -> tuple[float, float]:
@@ -40,46 +54,111 @@ def compute_laplacian_sharpness(face_bgr: np.ndarray) -> tuple[float, float]:
     return round(normalized, 2), round(lap_var, 2)
 
 
-def compute_frontal_symmetry(kps: np.ndarray | None) -> float:
-    """Estimate frontal pose quality (0..100) from 5 facial landmarks.
+def assess_frontal_pose(
+    kps: np.ndarray | None,
+    max_yaw_asymmetry: float = 0.42,
+    max_roll_degrees: float = 28.0,
+    min_frontal_score: float = 65.0,
+) -> FacePoseAssessment:
+    """Evaluate 3D head orientation from 5 landmarks and determine if the face is forward-facing.
 
     Landmarks order in InsightFace / RetinaFace:
         0: left_eye, 1: right_eye, 2: nose, 3: left_mouth, 4: right_mouth
     """
     if kps is None:
-        return 70.0
+        return FacePoseAssessment(
+            frontal_score=0.0,
+            yaw_asymmetry=1.0,
+            roll_degrees=90.0,
+            pitch_deviation=1.0,
+            is_forward_facing=False,
+        )
 
     pts = np.asarray(kps, dtype=np.float64)
     if pts.shape != (5, 2):
-        return 70.0
+        return FacePoseAssessment(
+            frontal_score=0.0,
+            yaw_asymmetry=1.0,
+            roll_degrees=90.0,
+            pitch_deviation=1.0,
+            is_forward_facing=False,
+        )
 
     left_eye, right_eye, nose, left_mouth, right_mouth = pts
     eye_dx = right_eye[0] - left_eye[0]
     eye_dy = right_eye[1] - left_eye[1]
     interocular = float(np.hypot(eye_dx, eye_dy))
-    if interocular < 4.0:
-        return 10.0
+    # Eyes must be horizontally separated in anatomical order (not profile-collapsed)
+    if interocular < 4.0 or eye_dx <= 2.0:
+        return FacePoseAssessment(
+            frontal_score=0.0,
+            yaw_asymmetry=1.0,
+            roll_degrees=90.0,
+            pitch_deviation=1.0,
+            is_forward_facing=False,
+        )
 
-    # 1. Roll penalty: tilt angle between eyes
+    # 1. Roll penalty: head tilt angle between eyes
     roll_deg = abs(float(np.degrees(np.arctan2(eye_dy, eye_dx))))
     roll_score = float(np.clip(1.0 - (roll_deg / 45.0), 0.0, 1.0))
 
-    # 2. Yaw penalty: horizontal symmetry of nose relative to eye midpoint
+    # 2. Yaw penalty: horizontal symmetry of nose AND mouth midpoint relative to eye span
     eye_mid_x = 0.5 * (left_eye[0] + right_eye[0])
-    yaw_offset = abs(nose[0] - eye_mid_x) / (0.5 * interocular)
-    yaw_score = float(np.clip(1.0 - yaw_offset, 0.0, 1.0))
+    half_eye_span = 0.5 * eye_dx
+    nose_yaw_offset = abs(nose[0] - eye_mid_x) / half_eye_span
+
+    mouth_mid_x = 0.5 * (left_mouth[0] + right_mouth[0])
+    mouth_yaw_offset = abs(mouth_mid_x - eye_mid_x) / half_eye_span
+
+    # Combine nose and mouth horizontal shift so turning to the side is caught reliably
+    yaw_asymmetry = float(0.75 * nose_yaw_offset + 0.25 * mouth_yaw_offset)
+    yaw_score = float(np.clip(1.0 - yaw_asymmetry, 0.0, 1.0))
 
     # 3. Pitch penalty: vertical placement of nose between eye line and mouth line
     eye_mid_y = 0.5 * (left_eye[1] + right_eye[1])
     mouth_mid_y = 0.5 * (left_mouth[1] + right_mouth[1])
-    eye_to_mouth = max(mouth_mid_y - eye_mid_y, 4.0)
+    eye_to_mouth = mouth_mid_y - eye_mid_y
+    if eye_to_mouth < 4.0:
+        return FacePoseAssessment(
+            frontal_score=0.0,
+            yaw_asymmetry=round(yaw_asymmetry, 3),
+            roll_degrees=round(roll_deg, 2),
+            pitch_deviation=1.0,
+            is_forward_facing=False,
+        )
+
     nose_ratio = (nose[1] - eye_mid_y) / eye_to_mouth
     # Ideal nose vertical ratio is ~0.55 between eyes and mouth
     pitch_deviation = abs(nose_ratio - 0.55) / 0.45
     pitch_score = float(np.clip(1.0 - pitch_deviation, 0.0, 1.0))
 
-    combined = (0.50 * yaw_score + 0.25 * roll_score + 0.25 * pitch_score) * 100.0
-    return round(float(np.clip(combined, 0.0, 100.0)), 2)
+    combined = round(
+        float(np.clip((0.55 * yaw_score + 0.25 * roll_score + 0.20 * pitch_score) * 100.0, 0.0, 100.0)),
+        2,
+    )
+
+    # Nose must remain strictly between the left and right eyes and within yaw/roll/pitch tolerances
+    nose_between_eyes = left_eye[0] < nose[0] < right_eye[0]
+    is_forward = bool(
+        nose_between_eyes
+        and yaw_asymmetry <= max_yaw_asymmetry
+        and roll_deg <= max_roll_degrees
+        and pitch_deviation <= 0.75
+        and combined >= min_frontal_score
+    )
+
+    return FacePoseAssessment(
+        frontal_score=combined,
+        yaw_asymmetry=round(yaw_asymmetry, 3),
+        roll_degrees=round(roll_deg, 2),
+        pitch_deviation=round(float(pitch_deviation), 3),
+        is_forward_facing=is_forward,
+    )
+
+
+def compute_frontal_symmetry(kps: np.ndarray | None) -> float:
+    """Estimate frontal pose quality (0..100) from 5 facial landmarks."""
+    return assess_frontal_pose(kps).frontal_score
 
 
 def compute_composite_quality(
@@ -88,10 +167,19 @@ def compute_composite_quality(
     kps: np.ndarray | None,
     det_score: float,
     frame_shape: tuple[int, int],
+    max_yaw_asymmetry: float = 0.42,
+    max_roll_degrees: float = 28.0,
+    min_frontal_score: float = 65.0,
 ) -> FaceQualityMetrics:
     """Compute overall face quality (0..100) combining sharpness, frontal pose, confidence, and size."""
     sharpness_score, raw_lap = compute_laplacian_sharpness(face_bgr)
-    frontal_score = compute_frontal_symmetry(kps)
+    pose = assess_frontal_pose(
+        kps,
+        max_yaw_asymmetry=max_yaw_asymmetry,
+        max_roll_degrees=max_roll_degrees,
+        min_frontal_score=min_frontal_score,
+    )
+    frontal_score = pose.frontal_score
     confidence_score = round(float(np.clip(det_score * 100.0, 0.0, 100.0)), 2)
 
     frame_h, frame_w = frame_shape[:2]
@@ -115,6 +203,9 @@ def compute_composite_quality(
         confidence_score=confidence_score,
         size_score=size_score,
         raw_laplacian_var=raw_lap,
+        yaw_asymmetry=pose.yaw_asymmetry,
+        roll_degrees=pose.roll_degrees,
+        is_forward_facing=pose.is_forward_facing,
     )
 
 

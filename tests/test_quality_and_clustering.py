@@ -3,8 +3,8 @@
 import cv2
 import numpy as np
 from app.vision.quality import (
+    assess_frontal_pose,
     compute_composite_quality,
-    compute_frontal_symmetry,
     compute_laplacian_sharpness,
     extract_padded_face_crop,
 )
@@ -44,21 +44,40 @@ def test_frontal_symmetry_prefers_centered_landmarks() -> None:
             [230.0, 250.0],  # right mouth
         ]
     )
+    marginally_turned_kps = np.array(
+        [
+            [160.0, 170.0],  # left eye
+            [240.0, 172.0],  # right eye
+            [212.0, 210.0],  # nose shifted slightly right (yaw_asymmetry ~ 0.275 <= 0.42)
+            [178.0, 250.0],  # left mouth
+            [238.0, 250.0],  # right mouth
+        ]
+    )
     profile_kps = np.array(
         [
             [160.0, 170.0],
             [240.0, 195.0],  # tilted roll
-            [255.0, 210.0],  # nose shifted far right (yaw)
-            [170.0, 250.0],
-            [230.0, 250.0],
+            [255.0, 210.0],  # nose shifted far right past eye center (yaw)
+            [195.0, 250.0],
+            [250.0, 250.0],
         ]
     )
 
-    frontal_score = compute_frontal_symmetry(frontal_kps)
-    profile_score = compute_frontal_symmetry(profile_kps)
+    frontal_pose = assess_frontal_pose(frontal_kps)
+    marginal_pose = assess_frontal_pose(marginally_turned_kps)
+    profile_pose = assess_frontal_pose(profile_kps)
+    missing_pose = assess_frontal_pose(None)
 
-    assert frontal_score > 90.0
-    assert profile_score < 50.0
+    assert frontal_pose.is_forward_facing is True
+    assert frontal_pose.frontal_score > 90.0
+
+    assert marginal_pose.is_forward_facing is True
+    assert marginal_pose.frontal_score >= 65.0
+    assert marginal_pose.yaw_asymmetry <= 0.42
+
+    assert profile_pose.is_forward_facing is False
+    assert profile_pose.frontal_score < 50.0
+    assert missing_pose.is_forward_facing is False
 
 
 def test_extract_padded_face_crop_clamps_to_frame_bounds() -> None:
@@ -82,9 +101,13 @@ def test_cluster_tracker_discovers_and_upgrades_best_frame() -> None:
     frame_blurry = np.full((240, 320, 3), 120, dtype=np.uint8)
     frame_sharp = _make_checkerboard(240, 12)
     bbox = np.array([40, 40, 180, 180], dtype=np.float32)
+    frontal_kps = np.array(
+        [[75.0, 85.0], [145.0, 85.0], [110.0, 115.0], [85.0, 150.0], [135.0, 150.0]],
+        dtype=np.float32,
+    )
 
-    q_low = compute_composite_quality(frame_blurry, bbox, None, 0.75, (240, 320))
-    q_high = compute_composite_quality(frame_sharp, bbox, None, 0.96, (240, 320))
+    q_low = compute_composite_quality(frame_blurry, bbox, frontal_kps, 0.75, (240, 320))
+    q_high = compute_composite_quality(frame_sharp, bbox, frontal_kps, 0.96, (240, 320))
 
     # 1. First sighting of Person A (blurry)
     res1 = tracker.update(person_a_emb, q_low, frame_blurry, frame_blurry, 10, 0.33, bbox)

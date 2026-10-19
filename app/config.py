@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     similarity_threshold: float = 0.42
     min_face_confidence: float = 0.60
     min_face_size_px: int = 44
+    min_frontal_score: float = 65.0
+    max_yaw_asymmetry: float = 0.42
+    max_roll_degrees: float = 28.0
     min_sightings: int = 1
     face_crop_padding: float = 0.35
     max_upload_mb: int = 500

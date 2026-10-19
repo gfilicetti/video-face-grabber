@@ -11,7 +11,6 @@ from app.config import Settings
 from app.main import create_app
 from app.storage.gcs_store import (
     StorageService,
-    encode_png_bytes,
     generate_run_folder_name,
     sanitize_video_stem,
 )
@@ -95,30 +94,44 @@ def test_fastapi_upload_and_sse_stream_end_to_end(tmp_path: Path) -> None:
     emb_person_1 /= np.linalg.norm(emb_person_1)
     emb_person_2 = rng.standard_normal(512).astype(np.float32)
     emb_person_2 /= np.linalg.norm(emb_person_2)
+    emb_person_side = rng.standard_normal(512).astype(np.float32)
+    emb_person_side /= np.linalg.norm(emb_person_side)
 
     call_counter = {"idx": 0}
 
     def fake_detector(frame_bgr: np.ndarray) -> list[DetectedFace]:
         idx = call_counter["idx"]
         call_counter["idx"] += 1
-        kps = np.array(
+        frontal_kps = np.array(
             [[130.0, 100.0], [190.0, 100.0], [160.0, 125.0], [140.0, 155.0], [180.0, 155.0]],
             dtype=np.float32,
         )
-        # Return Person 1 on every frame, and Person 2 on frame index 1
+        # Side-looking landmarks (nose shifted past right eye) — must be skipped!
+        side_kps = np.array(
+            [[130.0, 100.0], [190.0, 104.0], [196.0, 125.0], [165.0, 155.0], [195.0, 155.0]],
+            dtype=np.float32,
+        )
+        # Return Person 1 (frontal) on every frame, Person 2 (frontal) on frame 1,
+        # and a 3rd person who is looking to the side (should be skipped).
         faces = [
             DetectedFace(
                 bbox=np.array([100.0, 60.0, 220.0, 180.0], dtype=np.float32),
-                kps=kps,
+                kps=frontal_kps,
                 det_score=0.95 if idx == 1 else 0.80,
                 embedding=emb_person_1,
-            )
+            ),
+            DetectedFace(
+                bbox=np.array([200.0, 50.0, 300.0, 160.0], dtype=np.float32),
+                kps=side_kps,
+                det_score=0.98,
+                embedding=emb_person_side,
+            ),
         ]
         if idx == 1:
             faces.append(
                 DetectedFace(
                     bbox=np.array([20.0, 40.0, 95.0, 130.0], dtype=np.float32),
-                    kps=kps,
+                    kps=frontal_kps,
                     det_score=0.91,
                     embedding=emb_person_2,
                 )

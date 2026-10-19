@@ -88,6 +88,9 @@ class VideoFaceProcessor:
         similarity_threshold: float = 0.42,
         min_face_confidence: float = 0.60,
         min_face_size_px: int = 44,
+        min_frontal_score: float = 65.0,
+        max_yaw_asymmetry: float = 0.42,
+        max_roll_degrees: float = 28.0,
         min_sightings: int = 1,
         face_crop_padding: float = 0.35,
     ) -> None:
@@ -97,6 +100,9 @@ class VideoFaceProcessor:
         self.similarity_threshold = similarity_threshold
         self.min_face_confidence = min_face_confidence
         self.min_face_size_px = min_face_size_px
+        self.min_frontal_score = min_frontal_score
+        self.max_yaw_asymmetry = max_yaw_asymmetry
+        self.max_roll_degrees = max_roll_degrees
         self.min_sightings = min_sightings
         self.face_crop_padding = face_crop_padding
 
@@ -169,7 +175,13 @@ class VideoFaceProcessor:
                             kps=face.kps,
                             det_score=face.det_score,
                             frame_shape=frame_bgr.shape[:2],
+                            max_yaw_asymmetry=self.max_yaw_asymmetry,
+                            max_roll_degrees=self.max_roll_degrees,
+                            min_frontal_score=self.min_frontal_score,
                         )
+                        if not quality.is_forward_facing:
+                            continue
+
                         update_res = tracker.update(
                             embedding=face.embedding,
                             quality=quality,

@@ -61,6 +61,9 @@ def create_app(
         similarity_threshold=cfg.similarity_threshold,
         min_face_confidence=cfg.min_face_confidence,
         min_face_size_px=cfg.min_face_size_px,
+        min_frontal_score=cfg.min_frontal_score,
+        max_yaw_asymmetry=cfg.max_yaw_asymmetry,
+        max_roll_degrees=cfg.max_roll_degrees,
         min_sightings=cfg.min_sightings,
         face_crop_padding=cfg.face_crop_padding,
     )
