@@ -1,0 +1,16 @@
+.git
+.gitignore
+.env*
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+local_gcs_bucket/
+tmp_uploads/
+tests/
+*.mp4
+*.mov
+*.avi
+*.mkv

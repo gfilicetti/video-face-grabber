@@ -30,10 +30,13 @@ class InsightFaceDetector:
 
     def _ensure_loaded(self) -> Any:
         if self._app is None:
+            import os
             from insightface.app import FaceAnalysis
 
+            insightface_root = os.environ.get("INSIGHTFACE_HOME", "~/.insightface")
             app = FaceAnalysis(
                 name=self.model_name,
+                root=insightface_root,
                 providers=["CPUExecutionProvider"],
             )
             app.prepare(ctx_id=0, det_size=(640, 640))
