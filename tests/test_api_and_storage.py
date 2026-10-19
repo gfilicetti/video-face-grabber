@@ -25,10 +25,10 @@ def _create_synthetic_video(video_path: Path, num_frames: int = 6) -> None:
     try:
         for i in range(num_frames):
             frame = np.full((240, 320, 3), 30, dtype=np.uint8)
-            # Draw high-contrast pattern that gets sharper on frame 3
-            step = 8 if i == 3 else 32
-            for y in range(60, 180, step):
-                for x in range(100, 220, step):
+            # Draw high-contrast pattern on every frame that gets even sharper on frame 3
+            step = 6 if i == 3 else 12
+            for y in range(20, 200, step):
+                for x in range(15, 230, step):
                     if ((x // step) + (y // step)) % 2 == 0:
                         frame[y : y + step, x : x + step] = (240, 200, 160)
             writer.write(frame)
@@ -106,6 +106,10 @@ def test_fastapi_upload_and_sse_stream_end_to_end(tmp_path: Path) -> None:
             [[130.0, 100.0], [190.0, 100.0], [160.0, 125.0], [140.0, 155.0], [180.0, 155.0]],
             dtype=np.float32,
         )
+        frontal_kps_2 = np.array(
+            [[35.0, 65.0], [80.0, 65.0], [57.5, 85.0], [42.0, 110.0], [73.0, 110.0]],
+            dtype=np.float32,
+        )
         # Side-looking landmarks (nose shifted past right eye) — must be skipped!
         side_kps = np.array(
             [[130.0, 100.0], [190.0, 104.0], [196.0, 125.0], [165.0, 155.0], [195.0, 155.0]],
@@ -131,7 +135,7 @@ def test_fastapi_upload_and_sse_stream_end_to_end(tmp_path: Path) -> None:
             faces.append(
                 DetectedFace(
                     bbox=np.array([20.0, 40.0, 95.0, 130.0], dtype=np.float32),
-                    kps=frontal_kps,
+                    kps=frontal_kps_2,
                     det_score=0.91,
                     embedding=emb_person_2,
                 )

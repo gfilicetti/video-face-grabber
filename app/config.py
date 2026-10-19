@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     min_frontal_score: float = 65.0
     max_yaw_asymmetry: float = 0.42
     max_roll_degrees: float = 28.0
+    min_nose_ratio: float = 0.36
+    max_nose_ratio: float = 0.59
     min_sightings: int = 1
     face_crop_padding: float = 0.35
     max_upload_mb: int = 500

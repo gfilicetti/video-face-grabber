@@ -94,6 +94,8 @@ class VideoFaceProcessor:
         min_frontal_score: float = 65.0,
         max_yaw_asymmetry: float = 0.42,
         max_roll_degrees: float = 28.0,
+        min_nose_ratio: float = 0.36,
+        max_nose_ratio: float = 0.59,
         min_sightings: int = 1,
         face_crop_padding: float = 0.35,
     ) -> None:
@@ -106,6 +108,8 @@ class VideoFaceProcessor:
         self.min_frontal_score = min_frontal_score
         self.max_yaw_asymmetry = max_yaw_asymmetry
         self.max_roll_degrees = max_roll_degrees
+        self.min_nose_ratio = min_nose_ratio
+        self.max_nose_ratio = max_nose_ratio
         self.min_sightings = min_sightings
         self.face_crop_padding = face_crop_padding
 
@@ -181,8 +185,11 @@ class VideoFaceProcessor:
                             max_yaw_asymmetry=self.max_yaw_asymmetry,
                             max_roll_degrees=self.max_roll_degrees,
                             min_frontal_score=self.min_frontal_score,
+                            min_nose_ratio=self.min_nose_ratio,
+                            max_nose_ratio=self.max_nose_ratio,
                         )
-                        if not quality.is_forward_facing:
+                        # Reject side-looking, downward-looking, or heavily blurred faces
+                        if not quality.is_forward_facing or quality.sharpness_score < 35.0:
                             continue
 
                         update_res = tracker.update(

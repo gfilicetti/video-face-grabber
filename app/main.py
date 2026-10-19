@@ -64,6 +64,8 @@ def create_app(
         min_frontal_score=cfg.min_frontal_score,
         max_yaw_asymmetry=cfg.max_yaw_asymmetry,
         max_roll_degrees=cfg.max_roll_degrees,
+        min_nose_ratio=cfg.min_nose_ratio,
+        max_nose_ratio=cfg.max_nose_ratio,
         min_sightings=cfg.min_sightings,
         face_crop_padding=cfg.face_crop_padding,
     )
@@ -86,6 +88,10 @@ def create_app(
                     elif ev_type == "job_complete":
                         job.summary = ev
                         job.status = "completed"
+                        saved_ids = {int(p["person_id"]) for p in ev.get("people", [])}
+                        job.people = {
+                            pid: data for pid, data in job.people.items() if pid in saved_ids
+                        }
         except Exception as exc:  # noqa: BLE001
             with jobs_lock:
                 job.status = "failed"

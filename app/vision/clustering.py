@@ -21,6 +21,7 @@ class IdentityCluster:
 
     person_id: int
     centroid_embedding: np.ndarray
+    best_embedding: np.ndarray
     sightings_count: int
     best_quality: FaceQualityMetrics
     best_frame_bgr: np.ndarray
@@ -60,8 +61,47 @@ class FaceClusterTracker:
         return list(self._clusters)
 
     def get_verified_clusters(self) -> list[IdentityCluster]:
-        """Return clusters meeting the minimum sightings threshold."""
+        """Consolidate any split clusters whose best embeddings match and return verified clusters."""
+        self._consolidate_clusters()
         return [c for c in self._clusters if c.sightings_count >= self.min_sightings]
+
+    def _consolidate_clusters(self) -> None:
+        """Merge any secondary cluster into an earlier cluster if their embeddings exceed similarity_threshold."""
+        merged_any = True
+        while merged_any and len(self._clusters) > 1:
+            merged_any = False
+            for i in range(len(self._clusters)):
+                for j in range(i + 1, len(self._clusters)):
+                    ci = self._clusters[i]
+                    cj = self._clusters[j]
+                    sim = max(
+                        float(np.dot(ci.best_embedding, cj.best_embedding)),
+                        float(np.dot(ci.centroid_embedding, cj.best_embedding)),
+                        float(np.dot(ci.best_embedding, cj.centroid_embedding)),
+                        float(np.dot(ci.centroid_embedding, cj.centroid_embedding)),
+                    )
+                    if sim >= self.similarity_threshold:
+                        total_sightings = ci.sightings_count + cj.sightings_count
+                        ci.centroid_embedding = normalize_embedding(
+                            ci.centroid_embedding * ci.sightings_count
+                            + cj.centroid_embedding * cj.sightings_count
+                        )
+                        ci.sightings_count = total_sightings
+                        if cj.best_quality.composite_score > ci.best_quality.composite_score:
+                            ci.best_quality = cj.best_quality
+                            ci.best_embedding = cj.best_embedding.copy()
+                            ci.best_frame_bgr = cj.best_frame_bgr.copy()
+                            ci.best_crop_bgr = cj.best_crop_bgr.copy()
+                            ci.best_frame_index = cj.best_frame_index
+                            ci.best_timestamp_sec = cj.best_timestamp_sec
+                            ci.best_bbox = list(cj.best_bbox)
+                        del self._clusters[j]
+                        for idx, c in enumerate(self._clusters, start=1):
+                            c.person_id = idx
+                        merged_any = True
+                        break
+                if merged_any:
+                    break
 
     def update(
         self,
@@ -81,7 +121,10 @@ class FaceClusterTracker:
         best_sim = -1.0
 
         for cluster in self._clusters:
-            sim = float(np.dot(norm_emb, cluster.centroid_embedding))
+            sim = max(
+                float(np.dot(norm_emb, cluster.centroid_embedding)),
+                float(np.dot(norm_emb, cluster.best_embedding)),
+            )
             if sim > best_sim:
                 best_sim = sim
                 best_match = cluster
@@ -91,6 +134,7 @@ class FaceClusterTracker:
             new_cluster = IdentityCluster(
                 person_id=new_id,
                 centroid_embedding=norm_emb.copy(),
+                best_embedding=norm_emb.copy(),
                 sightings_count=1,
                 best_quality=quality,
                 best_frame_bgr=frame_bgr.copy(),
@@ -116,6 +160,7 @@ class FaceClusterTracker:
         prev_score = best_match.best_quality.composite_score
         if quality.composite_score > prev_score:
             best_match.best_quality = quality
+            best_match.best_embedding = norm_emb.copy()
             best_match.best_frame_bgr = frame_bgr.copy()
             best_match.best_crop_bgr = crop_bgr.copy()
             best_match.best_frame_index = frame_index

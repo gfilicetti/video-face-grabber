@@ -305,6 +305,18 @@
 
     es.addEventListener("job_complete", (msg) => {
       const ev = JSON.parse(msg.data);
+      const savedIds = new Set((ev.people || []).map((p) => `person-card-${p.person_id}`));
+      facesGrid.querySelectorAll(".person-card").forEach((card) => {
+        if (!savedIds.has(card.id)) {
+          card.remove();
+        }
+      });
+      const currentCards = facesGrid.querySelectorAll(".person-card").length;
+      metricPeople.textContent = String(currentCards);
+      galleryCountBadge.textContent = `${currentCards} ${currentCards === 1 ? "identity" : "identities"}`;
+      if (currentCards === 0) {
+        emptyGalleryState.hidden = false;
+      }
       setProgress(
         100,
         `Complete! Saved ${ev.total_people_saved} unique human face PNG set(s) to ${ev.folder_name}/.`

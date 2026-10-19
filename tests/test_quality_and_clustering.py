@@ -62,10 +62,20 @@ def test_frontal_symmetry_prefers_centered_landmarks() -> None:
             [250.0, 250.0],
         ]
     )
+    looking_down_kps = np.array(
+        [
+            [160.0, 170.0],  # left eye
+            [240.0, 170.0],  # right eye
+            [200.0, 226.0],  # nose pitched far down toward mouth (nose_ratio = 56/80 = 0.70 > 0.59)
+            [170.0, 250.0],  # left mouth
+            [230.0, 250.0],  # right mouth
+        ]
+    )
 
     frontal_pose = assess_frontal_pose(frontal_kps)
     marginal_pose = assess_frontal_pose(marginally_turned_kps)
     profile_pose = assess_frontal_pose(profile_kps)
+    looking_down_pose = assess_frontal_pose(looking_down_kps)
     missing_pose = assess_frontal_pose(None)
 
     assert frontal_pose.is_forward_facing is True
@@ -77,6 +87,7 @@ def test_frontal_symmetry_prefers_centered_landmarks() -> None:
 
     assert profile_pose.is_forward_facing is False
     assert profile_pose.frontal_score < 50.0
+    assert looking_down_pose.is_forward_facing is False
     assert missing_pose.is_forward_facing is False
 
 
@@ -135,3 +146,37 @@ def test_cluster_tracker_discovers_and_upgrades_best_frame() -> None:
     assert res4.status == "seen"
     assert res4.cluster.best_frame_index == 25
     assert len(tracker.get_verified_clusters()) == 2
+
+
+def test_cluster_tracker_consolidates_split_cluster_when_upgraded() -> None:
+    tracker = FaceClusterTracker(similarity_threshold=0.5, min_sightings=1)
+    rng = np.random.default_rng(99)
+
+    base_emb = normalize_embedding(rng.standard_normal(512))
+    ortho_emb = normalize_embedding(rng.standard_normal(512))
+    # Transitional degraded embedding has similarity < 0.5 to base_emb
+    transitional_emb = normalize_embedding(0.35 * base_emb + 0.93 * ortho_emb)
+    # Clearer later embedding of same person has similarity > 0.6 to both
+    clear_later_emb = normalize_embedding(0.75 * base_emb + 0.66 * transitional_emb)
+
+    frame_sharp = _make_checkerboard(240, 12)
+    bbox = np.array([40, 40, 180, 180], dtype=np.float32)
+    frontal_kps = np.array(
+        [[75.0, 85.0], [145.0, 85.0], [110.0, 115.0], [85.0, 150.0], [135.0, 150.0]],
+        dtype=np.float32,
+    )
+    q_mid = compute_composite_quality(frame_sharp, bbox, frontal_kps, 0.80, (240, 320))
+    q_high = compute_composite_quality(frame_sharp, bbox, frontal_kps, 0.98, (240, 320))
+
+    tracker.update(base_emb, q_mid, frame_sharp, frame_sharp, 10, 0.33, bbox)
+    tracker.update(transitional_emb, q_mid, frame_sharp, frame_sharp, 50, 1.67, bbox)
+    assert len(tracker.clusters) == 2
+
+    # When the second cluster upgrades to a clear frame matching Person 1, consolidation merges them
+    tracker.update(clear_later_emb, q_high, frame_sharp, frame_sharp, 55, 1.83, bbox)
+    verified = tracker.get_verified_clusters()
+    assert len(verified) == 1
+    assert verified[0].person_id == 1
+    assert verified[0].best_frame_index == 55
+    assert verified[0].sightings_count == 3
+

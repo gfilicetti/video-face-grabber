@@ -59,6 +59,8 @@ def assess_frontal_pose(
     max_yaw_asymmetry: float = 0.42,
     max_roll_degrees: float = 28.0,
     min_frontal_score: float = 65.0,
+    min_nose_ratio: float = 0.36,
+    max_nose_ratio: float = 0.59,
 ) -> FacePoseAssessment:
     """Evaluate 3D head orientation from 5 landmarks and determine if the face is forward-facing.
 
@@ -128,22 +130,24 @@ def assess_frontal_pose(
         )
 
     nose_ratio = (nose[1] - eye_mid_y) / eye_to_mouth
-    # Ideal nose vertical ratio is ~0.55 between eyes and mouth
-    pitch_deviation = abs(nose_ratio - 0.55) / 0.45
+    # Ideal forward-facing nose vertical ratio is ~0.48 between eyes and mouth;
+    # >= 0.60 indicates the head is pitched downward (looking down).
+    pitch_deviation = abs(nose_ratio - 0.48) / 0.25
     pitch_score = float(np.clip(1.0 - pitch_deviation, 0.0, 1.0))
 
     combined = round(
-        float(np.clip((0.55 * yaw_score + 0.25 * roll_score + 0.20 * pitch_score) * 100.0, 0.0, 100.0)),
+        float(np.clip((0.50 * yaw_score + 0.25 * roll_score + 0.25 * pitch_score) * 100.0, 0.0, 100.0)),
         2,
     )
 
     # Nose must remain strictly between the left and right eyes and within yaw/roll/pitch tolerances
     nose_between_eyes = left_eye[0] < nose[0] < right_eye[0]
+    pitch_within_bounds = min_nose_ratio <= nose_ratio <= max_nose_ratio
     is_forward = bool(
         nose_between_eyes
+        and pitch_within_bounds
         and yaw_asymmetry <= max_yaw_asymmetry
         and roll_deg <= max_roll_degrees
-        and pitch_deviation <= 0.75
         and combined >= min_frontal_score
     )
 
@@ -156,11 +160,6 @@ def assess_frontal_pose(
     )
 
 
-def compute_frontal_symmetry(kps: np.ndarray | None) -> float:
-    """Estimate frontal pose quality (0..100) from 5 facial landmarks."""
-    return assess_frontal_pose(kps).frontal_score
-
-
 def compute_composite_quality(
     face_bgr: np.ndarray,
     bbox: np.ndarray,
@@ -170,6 +169,8 @@ def compute_composite_quality(
     max_yaw_asymmetry: float = 0.42,
     max_roll_degrees: float = 28.0,
     min_frontal_score: float = 65.0,
+    min_nose_ratio: float = 0.36,
+    max_nose_ratio: float = 0.59,
 ) -> FaceQualityMetrics:
     """Compute overall face quality (0..100) combining sharpness, frontal pose, confidence, and size."""
     sharpness_score, raw_lap = compute_laplacian_sharpness(face_bgr)
@@ -178,6 +179,8 @@ def compute_composite_quality(
         max_yaw_asymmetry=max_yaw_asymmetry,
         max_roll_degrees=max_roll_degrees,
         min_frontal_score=min_frontal_score,
+        min_nose_ratio=min_nose_ratio,
+        max_nose_ratio=max_nose_ratio,
     )
     frontal_score = pose.frontal_score
     confidence_score = round(float(np.clip(det_score * 100.0, 0.0, 100.0)), 2)
