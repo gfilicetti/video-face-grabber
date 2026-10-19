@@ -1,26 +1,120 @@
 # Video Face Grab
 
-A Cloud Run web application that accepts an uploaded video file, detects and clusters every discernable human face across the video using RetinaFace + ArcFace (`insightface`), selects the single sharpest and clearest frame for each person, and uploads both the **full video frame** and **cropped face preview** as lossless `.png` files to Google Cloud Storage under `<video-filename>-<unique-number-suffix>/`.
+**Video Face Grab** is a real-time computer vision web application built with **FastAPI**, **InsightFace (RetinaFace + ArcFace ONNX)**, **OpenCV**, and **Google Cloud Storage (GCS)**, packaged for stateless deployment on **Google Cloud Run**.
 
-## Features
-- **Identity Clustering (1 Person = 1 Best Frame Set)**: Uses 512-D ArcFace embeddings and cosine similarity clustering so each human appears once, even across thousands of frames.
-- **Composite Clarity Scoring**: Evaluates every face sighting on Laplacian sharpness ($0.35$), 5-point landmark frontal symmetry ($0.30$), detector confidence ($0.20$), and relative face size ($0.15$).
-- **Real-Time SSE UI**: Streams frame scanning progress, live face discoveries, clarity upgrades, and GCS upload completions over Server-Sent Events (`EventSource`).
-- **Dual PNG Exports to GCS**: Saves both `person_XX_full_frame.png` and `person_XX_face_crop.png` to `gs://<GCS_BUCKET_NAME>/<video-stem>-<unique-number-suffix>/`.
+Upload any video file (`.mp4`, `.mov`, `.webm`, `.mkv`, `.avi`, `.m4v`) and the backend will:
+1. Scan frames and detect every discernable **forward-facing** human face (skipping side-profile and downward-looking poses).
+2. Cluster sightings using 512-dimensional ArcFace identity embeddings so **each unique person is captured once**.
+3. Continuously evaluate clarity (Laplacian sharpness, 3D frontal pose symmetry, detector confidence, and face size) to lock onto the **single clearest frame** per person.
+4. Upload both the **full video frame** (`person_XX_full_frame.png`) and **padded face crop** (`person_XX_face_crop.png`) as lossless `.png` files to Google Cloud Storage under `<video-filename>-<unique-number-suffix>/`.
+5. Stream live progress, face discoveries, clarity upgrades, and GCS object links to a responsive dark-mode web UI over **Server-Sent Events (SSE)**.
 
-## Local Development
+> For a deep dive into the 3D pose equations, composite clarity formula, clustering consolidation algorithm, and SSE lifecycle, see [**ARCHITECTURE.md**](./ARCHITECTURE.md).
 
+---
+
+## Key Features
+
+- **Forward-Facing 3D Pose Filter**: Uses 5-point facial landmarks (eyes, nose tip, mouth corners) to estimate yaw asymmetry, head roll angle, and vertical pitch ratio—capturing frontal and marginally turned faces ($\le 22^\circ$ yaw) while filtering out side profiles and faces looking down at notes/podiums.
+- **1 Person = 1 Best Frame Set**: Dual-anchor cosine similarity matching (against both the running cluster centroid and the sharpest frame's embedding) plus an end-of-video cluster consolidation pass prevents duplicate identity splits across camera cuts.
+- **Composite Clarity Scoring (`0–100`)**:
+  $$\text{Score} = 0.35 \cdot \text{Sharpness} + 0.30 \cdot \text{FrontalPose} + 0.20 \cdot \text{Confidence} + 0.15 \cdot \text{RelativeSize}$$
+- **Dual Lossless PNG Output**: Saves both the uncropped full video frame and a $35\%$-padded portrait crop per person to `gs://<GCS_BUCKET_NAME>/<video-stem>-<unique-number-suffix>/`.
+- **Zero-Dependency Local Fallback**: Runs out-of-the-box without GCP credentials by automatically falling back to `./local_gcs_bucket/` when `GCS_BUCKET_NAME` is unset.
+
+---
+
+## Quickstart (Local Development)
+
+### Prerequisites
+- Python 3.11+
+- `ffmpeg` / OpenCV runtime libraries (included automatically on macOS and in the provided `Dockerfile`)
+
+### 1. Create a Virtual Environment & Install Dependencies
 ```bash
-# 1. Run tests
-.venv/bin/pytest -q
-
-# 2. Start the server (uses local_gcs_bucket/ fallback if GCS_BUCKET_NAME is unset)
-.venv/bin/uvicorn app.main:app --reload --port 8080
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
 ```
 
-## Deploy to GCP Cloud Run
+### 2. Run the Automated Test Suite
+```bash
+pytest -q
+```
 
+### 3. Start the Local Server
+```bash
+# Runs in local storage mode (saves PNGs to ./local_gcs_bucket/)
+uvicorn app.main:app --reload --port 8080
+```
+Open [http://localhost:8080](http://localhost:8080) in your browser and drag-and-drop a video file.
+
+To test against a live Google Cloud Storage bucket locally:
+```bash
+export GCP_PROJECT_ID="your-gcp-project-id"
+export GCS_BUCKET_NAME="your-gcs-bucket-name"
+uvicorn app.main:app --reload --port 8080
+```
+
+---
+
+## Configuration Reference
+
+All settings in [`app/config.py`](./app/config.py) can be configured via environment variables or a `.env` file:
+
+| Environment Variable | Default | Description |
+| :--- | :---: | :--- |
+| `GCP_PROJECT_ID` | `""` | Google Cloud project ID for GCS client initialization. |
+| `GCS_BUCKET_NAME` | `""` | Target GCS bucket name. If empty, saves PNGs locally under `LOCAL_STORAGE_DIR`. |
+| `LOCAL_STORAGE_DIR` | `local_gcs_bucket` | Local directory fallback when `GCS_BUCKET_NAME` is unset. |
+| `FRAME_SAMPLE_FPS` | `3.0` | Number of frames per second of video to sample for face detection. |
+| `SIMILARITY_THRESHOLD` | `0.42` | Cosine similarity threshold (`0..1`) for grouping two 512-D embeddings into the same identity cluster. |
+| `MIN_FACE_CONFIDENCE` | `0.60` | Minimum RetinaFace detection score (`0..1`). |
+| `MIN_FACE_SIZE_PX` | `44` | Minimum bounding-box width and height in pixels. |
+| `MIN_FRONTAL_SCORE` | `65.0` | Minimum combined 3D pose score (`0..100`) required to accept a face as forward-facing. |
+| `MAX_YAW_ASYMMETRY` | `0.42` | Maximum horizontal nose/mouth asymmetry relative to inter-ocular half-width (~$20^\circ\text{–}25^\circ$ yaw tolerance). |
+| `MAX_ROLL_DEGREES` | `28.0` | Maximum head tilt angle in degrees. |
+| `MIN_NOSE_RATIO` | `0.36` | Minimum vertical nose-to-eye/mouth ratio (filters upward-looking faces). |
+| `MAX_NOSE_RATIO` | `0.59` | Maximum vertical nose-to-eye/mouth ratio (filters downward-looking faces). |
+| `FACE_CROP_PADDING` | `0.35` | Fractional padding added around the face bounding box for `person_XX_face_crop.png`. |
+| `MAX_UPLOAD_MB` | `500` | Maximum uploaded video file size in megabytes. |
+
+---
+
+## Deploying to Google Cloud Run
+
+The repository includes a production `Dockerfile` (which pre-downloads the `buffalo_sc` ONNX models during `docker build` to eliminate cold-start downloads) and a deployment helper script [`deploy_cloud_run.sh`](./deploy_cloud_run.sh).
+
+### 1. Create a GCS Bucket (if you don't have one)
+```bash
+gcloud storage buckets create gs://YOUR_GCS_BUCKET_NAME \
+  --project=YOUR_GCP_PROJECT_ID \
+  --location=us-central1 \
+  --uniform-bucket-level-access \
+  --public-access-prevention
+```
+
+### 2. Deploy with One Command
 ```bash
 chmod +x deploy_cloud_run.sh
-GCS_BUCKET_NAME="your-target-gcs-bucket" GCP_PROJECT_ID="your-gcp-project" ./deploy_cloud_run.sh
+GCP_PROJECT_ID="YOUR_GCP_PROJECT_ID" \
+GCS_BUCKET_NAME="YOUR_GCS_BUCKET_NAME" \
+REGION="us-central1" \
+./deploy_cloud_run.sh
 ```
+
+This builds the container via Cloud Build and deploys it to Cloud Run with `--cpu=2`, `--memory=4Gi`, and `--timeout=900` for streaming video jobs.
+
+---
+
+## API Endpoints
+
+| Method | Endpoint | Description |
+| :---: | :--- | :--- |
+| `GET` | `/` | Serves the responsive Studio Web UI. |
+| `GET` | `/api/health` | Returns service health, active `gcs_bucket`, and `storage_mode` (`gcs` or `local`). |
+| `POST` | `/api/jobs` | Accepts a `multipart/form-data` `file` upload, creates the `<video>-<suffix>` folder prefix, and starts background processing. |
+| `GET` | `/api/jobs/{job_id}/stream` | Server-Sent Events (`text/event-stream`) feed of frame progress, face discoveries, clarity upgrades, and saved GCS URIs. |
+| `GET` | `/api/jobs/{job_id}` | Returns a JSON snapshot of job status, discovered people, and completion summary. |
+| `GET` | `/api/storage/{folder_name}/{file_name}` | Streams saved `.png` files from GCS (or local fallback) for in-browser full-frame inspection and download. |
