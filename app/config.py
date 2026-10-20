@@ -10,6 +10,9 @@ class Settings(BaseSettings):
     app_name: str = "Video Face Grab"
     gcp_project_id: str = ""
     gcs_bucket_name: str = ""
+    public_base_url: str = "https://video-face-grab-994000852218.us-central1.run.app"
+    signed_url_ttl_seconds: int = 3600
+    gemini_model: str = "gemini-2.5-flash"
     local_storage_dir: Path = Path("local_gcs_bucket")
     temp_upload_dir: Path = Path("tmp_uploads")
 

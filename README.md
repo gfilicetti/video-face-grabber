@@ -108,6 +108,38 @@ This builds the container via Cloud Build and deploys it to Cloud Run with `--cp
 
 ---
 
+## Deploying to Gemini Enterprise (Gemini Agent)
+
+The repository is also a full **Google Agent Development Kit (ADK)** project (`agents-cli-manifest.yaml`, `app/agent.py`, `app/tools.py`, `app/fast_api_app.py`) that can be deployed to **Vertex AI Agent Runtime** and registered with **Gemini Enterprise**.
+
+### 1. Test Locally in ADK Playground
+```bash
+agents-cli playground
+```
+
+### 2. Deploy to Vertex AI Agent Runtime & Register with Gemini Enterprise
+```bash
+chmod +x deploy_gemini_enterprise.sh
+
+# Deploy to Agent Runtime (and optionally pass GEMINI_ENTERPRISE_APP_ID to publish in one step)
+GCP_PROJECT_ID="video-face-grab" \
+GCS_BUCKET_NAME="video-face-grab-faces" \
+REGION="us-central1" \
+./deploy_gemini_enterprise.sh
+```
+
+Once you have created a Gemini Enterprise App in **Google Cloud Console → Gemini Enterprise → Apps**, register the deployed agent interactively or via flag:
+```bash
+agents-cli publish gemini-enterprise --interactive
+# Or non-interactively:
+agents-cli publish gemini-enterprise \
+  --registration-type adk \
+  --gemini-enterprise-app-id "projects/YOUR_PROJECT/locations/global/collections/default_collection/engines/YOUR_APP_ID" \
+  --display-name "Video Face Grab"
+```
+
+---
+
 ## API Endpoints
 
 | Method | Endpoint | Description |

@@ -7,7 +7,7 @@ from pathlib import Path
 import threading
 import uuid
 from typing import Any, AsyncIterator
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from app.config import Settings, settings
@@ -33,25 +33,25 @@ class JobRecord:
     done: bool = False
 
 
-def create_app(
+def register_studio_routes(
+    app: FastAPI,
     app_settings: Settings | None = None,
     processor_override: VideoFaceProcessor | None = None,
-) -> FastAPI:
-    """Create and configure the FastAPI application instance."""
+    include_root_index: bool = True,
+) -> VideoFaceProcessor:
+    """Attach the Video Face Grab REST, SSE, and storage proxy routes to a FastAPI app."""
     cfg = app_settings or settings
     cfg.local_storage_dir.mkdir(parents=True, exist_ok=True)
     cfg.temp_upload_dir.mkdir(parents=True, exist_ok=True)
 
-    app = FastAPI(
-        title=cfg.app_name,
-        description="Extracts the clearest single PNG frame for each discernable human face in a video and saves it to GCS.",
-        version="1.0.0",
-    )
-
-    storage_service = StorageService(
-        bucket_name=cfg.gcs_bucket_name,
-        project_id=cfg.gcp_project_id,
-        local_storage_dir=cfg.local_storage_dir,
+    storage_service = (
+        processor_override.storage_service
+        if processor_override is not None
+        else StorageService(
+            bucket_name=cfg.gcs_bucket_name,
+            project_id=cfg.gcp_project_id,
+            local_storage_dir=cfg.local_storage_dir,
+        )
     )
     detector = InsightFaceDetector(model_name=cfg.insightface_model_name)
     processor = processor_override or VideoFaceProcessor(
@@ -234,6 +234,20 @@ def create_app(
             },
         )
 
+    @app.get("/api/storage/{folder_name}/{file_name}")
+    async def serve_stored_png(folder_name: str, file_name: str) -> Response:
+        try:
+            png_bytes = storage_service.read_stored_png_bytes(folder_name, file_name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return Response(
+            content=png_bytes,
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+
     app.mount(
         "/files",
         StaticFiles(directory=str(cfg.local_storage_dir)),
@@ -244,13 +258,41 @@ def create_app(
     static_dir.mkdir(parents=True, exist_ok=True)
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
-    @app.get("/")
-    async def serve_index() -> FileResponse:
+    @app.get("/studio")
+    async def serve_studio() -> FileResponse:
         index_file = static_dir / "index.html"
         if not index_file.exists():
             raise HTTPException(status_code=404, detail="Frontend index.html not found.")
         return FileResponse(index_file)
 
+    if include_root_index:
+        @app.get("/")
+        async def serve_index() -> FileResponse:
+            index_file = static_dir / "index.html"
+            if not index_file.exists():
+                raise HTTPException(status_code=404, detail="Frontend index.html not found.")
+            return FileResponse(index_file)
+
+    return processor
+
+
+def create_app(
+    app_settings: Settings | None = None,
+    processor_override: VideoFaceProcessor | None = None,
+) -> FastAPI:
+    """Create and configure the standalone FastAPI application instance."""
+    cfg = app_settings or settings
+    app = FastAPI(
+        title=cfg.app_name,
+        description="Extracts the clearest single PNG frame for each discernable human face in a video and saves it to GCS.",
+        version="1.0.0",
+    )
+    register_studio_routes(
+        app,
+        app_settings=cfg,
+        processor_override=processor_override,
+        include_root_index=True,
+    )
     return app
 
 

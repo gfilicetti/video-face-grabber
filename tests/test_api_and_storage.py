@@ -201,3 +201,51 @@ def test_fastapi_upload_and_sse_stream_end_to_end(tmp_path: Path) -> None:
     assert index_resp.status_code == 200
     assert "Video Face Grab" in index_resp.text
 
+    # Verify /api/storage/{folder_name}/{file_name} serves lossless PNG bytes
+    png_resp = client.get(f"/api/storage/{folder_name}/person_01_face_crop.png")
+    assert png_resp.status_code == 200
+    assert png_resp.headers["content-type"] == "image/png"
+    assert png_resp.content.startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_storage_service_gcs_download_and_renderable_url_fallback(tmp_path: Path) -> None:
+    mock_client = MagicMock()
+    mock_bucket = MagicMock()
+    mock_blob = MagicMock()
+    mock_client.bucket.return_value = mock_bucket
+    mock_bucket.blob.return_value = mock_blob
+    mock_blob.generate_signed_url.side_effect = RuntimeError("No private key in ambient ADC")
+
+    def _fake_download(dest_filename: str) -> None:
+        Path(dest_filename).write_bytes(b"fake-mp4-bytes")
+
+    mock_blob.download_to_filename.side_effect = _fake_download
+
+    service = StorageService(
+        bucket_name="video-face-grab-faces",
+        project_id="video-face-grab",
+        local_storage_dir=tmp_path / "local_gcs",
+        gcs_client=mock_client,
+    )
+
+    dest_video = tmp_path / "downloads" / "clip.mp4"
+    out_path = service.download_gcs_uri_to_path(
+        "gs://video-face-grab-faces/uploads/clip.mp4", dest_video
+    )
+    assert out_path == dest_video
+    assert dest_video.read_bytes() == b"fake-mp4-bytes"
+    mock_client.bucket.assert_called_with("video-face-grab-faces")
+    mock_bucket.blob.assert_called_with("uploads/clip.mp4")
+
+    # Verify fallback to Cloud Run /api/storage proxy URL when V4 signing is unavailable
+    url = service.get_renderable_image_url(
+        "sample-clip-123456",
+        "person_01_face_crop.png",
+        public_base_url="https://video-face-grab-994000852218.us-central1.run.app",
+    )
+    assert (
+        url
+        == "https://video-face-grab-994000852218.us-central1.run.app/api/storage/sample-clip-123456/person_01_face_crop.png"
+    )
+
+

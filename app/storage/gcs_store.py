@@ -1,11 +1,14 @@
 """GCS and local storage service for saving best human face frames as PNGs."""
 
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 import re
 import secrets
 import time
 import cv2
+import google.auth
+from google.auth.transport import requests as google_auth_requests
 import numpy as np
 from google.api_core.client_info import ClientInfo
 from google.cloud import storage
@@ -49,7 +52,7 @@ def encode_png_bytes(image_bgr: np.ndarray) -> bytes:
 
 @dataclass(frozen=True)
 class SavedPersonAssets:
-    """Metadata and URIs for a single saved human identity."""
+    """Metadata, URIs, and raw PNG bytes for a single saved human identity."""
 
     person_id: int
     folder_name: str
@@ -60,6 +63,8 @@ class SavedPersonAssets:
     full_frame_url: str
     face_crop_url: str
     storage_backend: str
+    full_frame_png_bytes: bytes = b""
+    face_crop_png_bytes: bytes = b""
 
 
 class StorageService:
@@ -118,8 +123,8 @@ class StorageService:
         (target_local_dir / full_filename).write_bytes(full_png)
         (target_local_dir / crop_filename).write_bytes(crop_png)
 
-        local_full_url = f"/files/{safe_folder}/{full_filename}"
-        local_crop_url = f"/files/{safe_folder}/{crop_filename}"
+        local_full_url = f"/api/storage/{safe_folder}/{full_filename}"
+        local_crop_url = f"/api/storage/{safe_folder}/{crop_filename}"
 
         if self.bucket_name:
             client = self._get_gcs_client()
@@ -141,6 +146,8 @@ class StorageService:
                 full_frame_url=local_full_url,
                 face_crop_url=local_crop_url,
                 storage_backend="gcs",
+                full_frame_png_bytes=full_png,
+                face_crop_png_bytes=crop_png,
             )
 
         return SavedPersonAssets(
@@ -153,4 +160,97 @@ class StorageService:
             full_frame_url=local_full_url,
             face_crop_url=local_crop_url,
             storage_backend="local",
+            full_frame_png_bytes=full_png,
+            face_crop_png_bytes=crop_png,
         )
+
+    def read_stored_png_bytes(self, folder_name: str, file_name: str) -> bytes:
+        """Read a saved PNG from local cache or fallback to GCS bucket."""
+        safe_folder = re.sub(r"[^a-z0-9\-_]", "", folder_name.lower())
+        safe_file = re.sub(r"[^a-z0-9\-_.]", "", file_name.lower())
+        if not safe_folder or not safe_file or not safe_file.endswith(".png"):
+            raise ValueError("Invalid folder_name or file_name.")
+
+        local_path = (self.local_storage_dir / safe_folder / safe_file).resolve()
+        base_local_dir = self.local_storage_dir.resolve()
+        if not local_path.is_relative_to(base_local_dir):
+            raise ValueError("Path traversal detected.")
+
+        if local_path.exists():
+            return local_path.read_bytes()
+
+        if self.bucket_name:
+            client = self._get_gcs_client()
+            bucket = client.bucket(self.bucket_name)
+            blob = bucket.blob(f"{safe_folder}/{safe_file}")
+            if blob.exists():
+                data = blob.download_as_bytes()
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                local_path.write_bytes(data)
+                return data
+
+        raise FileNotFoundError(f"PNG object '{safe_folder}/{safe_file}' not found.")
+
+    def download_gcs_uri_to_path(self, gcs_uri: str, dest_path: Path) -> Path:
+        """Download a gs://<bucket>/<object> video file to a local destination path."""
+        uri = (gcs_uri or "").strip()
+        if not uri.startswith("gs://"):
+            raise ValueError(f"Expected a gs:// URI, got: {uri!r}")
+        without_scheme = uri.removeprefix("gs://")
+        parts = without_scheme.split("/", 1)
+        if len(parts) != 2 or not parts[0] or not parts[1]:
+            raise ValueError(f"Malformed gs:// URI (missing bucket or object): {uri!r}")
+        bucket_name, blob_name = parts[0], parts[1]
+
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        client = self._get_gcs_client()
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(blob_name)
+        blob.download_to_filename(str(dest_path))
+        return dest_path
+
+    def get_renderable_image_url(
+        self,
+        folder_name: str,
+        file_name: str,
+        public_base_url: str = "https://video-face-grab-994000852218.us-central1.run.app",
+        ttl_seconds: int = 3600,
+    ) -> str:
+        """Return a V4 Signed URL if possible, else fallback to the Cloud Run /api/storage proxy URL."""
+        safe_folder = re.sub(r"[^a-z0-9\-_]", "", folder_name.lower())
+        safe_file = re.sub(r"[^a-z0-9\-_.]", "", file_name.lower())
+        base = (public_base_url or "").rstrip("/")
+        proxy_url = f"{base}/api/storage/{safe_folder}/{safe_file}"
+
+        if not self.bucket_name:
+            return proxy_url
+
+        try:
+            client = self._get_gcs_client()
+            bucket = client.bucket(self.bucket_name)
+            blob = bucket.blob(f"{safe_folder}/{safe_file}")
+            # Attempt direct V4 signing first (works with service account key files)
+            return blob.generate_signed_url(
+                version="v4",
+                expiration=timedelta(seconds=ttl_seconds),
+                method="GET",
+            )
+        except Exception:  # noqa: BLE001
+            try:
+                # Fallback to IAM signBlob using ambient ADC token + service account email
+                credentials, _ = google.auth.default()
+                auth_req = google_auth_requests.Request()
+                credentials.refresh(auth_req)
+                sa_email = getattr(credentials, "service_account_email", None)
+                if sa_email and sa_email != "default" and credentials.token:
+                    return blob.generate_signed_url(
+                        version="v4",
+                        expiration=timedelta(seconds=ttl_seconds),
+                        method="GET",
+                        service_account_email=sa_email,
+                        access_token=credentials.token,
+                    )
+            except Exception:  # noqa: BLE001
+                pass
+
+        return proxy_url

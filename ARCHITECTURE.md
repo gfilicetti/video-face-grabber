@@ -216,3 +216,21 @@ The browser connects to `GET /api/jobs/{job_id}/stream` via `EventSource`. The b
 | `face_saved` | Both PNGs uploaded to GCS | `person_id`, `full_frame_uri`, `face_crop_uri`, `full_frame_url`, `face_crop_url` | Enables **View Full Frame PNG** modal & download link |
 | `job_complete` | All verified clusters uploaded | `total_people_saved`, `folder_name`, `bucket_name`, `people` | Prunes any consolidated temporary cards & marks job complete |
 | `job_error` | Unhandled processing exception | `message` | Displays error state & re-enables upload form |
+
+---
+
+## 5. Gemini Enterprise (Gemini Agent) & ADK Architecture
+
+In addition to the standalone Studio Web UI, the repository ships an **Agent Development Kit (ADK)** agent (`app/agent.py`, `app/tools.py`, `app/fast_api_app.py`) that exposes the exact same computer-vision pipeline inside **Gemini Enterprise (Gemini Agent)** over Vertex AI Agent Runtime (`:streamQuery`) and the Agent2Agent (`A2A`) protocol.
+
+### 1. Video Attachment Interception (`VideoUploadInterceptorPlugin`)
+When a user uploads a video via the paperclip in Gemini Enterprise (or ADK Web), `VideoUploadInterceptorPlugin` (`app/agent.py`) intercepts the incoming `video/*` `Part`:
+- For `inline_data` attachments (up to `MAX_UPLOAD_MB` = `500 MB`), it saves the video bytes directly into the ADK `ArtifactService` (`<filename>.mp4`), records `session.state["latest_video_source"]`, and replaces the raw video bytes in `user_message.parts` with a lightweight text instruction (`[Attached Video Saved as Artifact: "<filename>.mp4" — call extract_forward_facing_faces(...)]`).
+- For `file_data` (`gs://` URIs), it records the URI in `session.state["latest_video_source"]`.
+- This prevents multi-megabyte video blobs from bloating the LLM token window while allowing `extract_forward_facing_faces` to read the exact video stream via OpenCV.
+
+### 2. Three-Layer Inline Image Delivery (`extract_forward_facing_faces`)
+Because `gs://video-face-grab-faces` enforces **Public Access Prevention**, `extract_forward_facing_faces` (`app/tools.py`) delivers each person's `person_XX_face_crop.png` and `person_XX_full_frame.png` inline through three complementary layers:
+1. **ADK Session Artifacts**: Saves both PNGs into the session's `ArtifactService` (`await tool_context.save_artifact(...)`) with `mime_type="image/png"`, enabling native rich-media rendering in ADK & Gemini Enterprise.
+2. **V4 Signed URLs (when credentials support signing)**: Generates temporary V4 Signed URLs (`StorageService.get_renderable_image_url`).
+3. **Cloud Run `/api/storage/{folder_name}/{file_name}` Proxy Fallback**: Automatically falls back to `{PUBLIC_BASE_URL}/api/storage/{folder_name}/{file_name}`, which streams the PNG bytes from local cache or `gs://video-face-grab-faces` with `Cache-Control: public, max-age=86400` so Markdown `![Person #01 Face Crop](...)` and `![Person #01 Full Frame](...)` render inline in any browser.
