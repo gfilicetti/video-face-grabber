@@ -53,6 +53,8 @@ def get_or_create_processor(app_settings: Settings | None = None) -> VideoFacePr
         similarity_threshold=cfg.similarity_threshold,
         min_face_confidence=cfg.min_face_confidence,
         min_face_size_px=cfg.min_face_size_px,
+        min_sharpness_score=cfg.min_sharpness_score,
+        require_forward_facing=cfg.require_forward_facing,
         min_frontal_score=cfg.min_frontal_score,
         max_yaw_asymmetry=cfg.max_yaw_asymmetry,
         max_roll_degrees=cfg.max_roll_degrees,
@@ -212,7 +214,7 @@ async def extract_forward_facing_faces(
     video_source: str,
     tool_context: ToolContext,
 ) -> dict[str, Any]:
-    """Detects and clusters all forward-facing human faces in a video, uploads the clearest full-frame and face-crop PNGs per person to Google Cloud Storage, and saves inline PNG artifacts for the UI.
+    """Detects and clusters all human faces/heads in a video (including profile-only individuals), ranks each person's frames by frontalness and clarity, uploads the best full-frame and face-crop PNGs per person to Google Cloud Storage, and saves inline PNG artifacts for the UI.
 
     Args:
         video_source: The video to process. Pass 'auto' to process the user's latest attached video in the session, an artifact filename (e.g. 'clip.mp4'), or a Cloud Storage URI ('gs://bucket/path.mp4').

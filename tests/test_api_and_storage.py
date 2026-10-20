@@ -110,13 +110,14 @@ def test_fastapi_upload_and_sse_stream_end_to_end(tmp_path: Path) -> None:
             [[35.0, 65.0], [80.0, 65.0], [57.5, 85.0], [42.0, 110.0], [73.0, 110.0]],
             dtype=np.float32,
         )
-        # Side-looking landmarks (nose shifted past right eye) — must be skipped!
+        # Side-looking landmarks (nose shifted past right eye) — must still be captured as a person,
+        # but with a significantly lower frontal & composite score than square frontal faces!
         side_kps = np.array(
             [[130.0, 100.0], [190.0, 104.0], [196.0, 125.0], [165.0, 155.0], [195.0, 155.0]],
             dtype=np.float32,
         )
-        # Return Person 1 (frontal) on every frame, Person 2 (frontal) on frame 1,
-        # and a 3rd person who is looking to the side (should be skipped).
+        # Return Person 1 (frontal) on every frame, Person 2 (profile-only) on every frame,
+        # and Person 3 (frontal) on frame 1. All 3 must be captured!
         faces = [
             DetectedFace(
                 bbox=np.array([100.0, 60.0, 220.0, 180.0], dtype=np.float32),
@@ -187,7 +188,11 @@ def test_fastapi_upload_and_sse_stream_end_to_end(tmp_path: Path) -> None:
     assert "job_complete" in event_types
 
     complete_ev = next(e for e in events if e["event"] == "job_complete")
-    assert complete_ev["total_people_saved"] == 2
+    assert complete_ev["total_people_saved"] == 3
+    people_by_id = {p["person_id"]: p for p in complete_ev["people"]}
+    # Frontal Person 1 and Person 3 must score significantly higher on frontal & composite than profile Person 2
+    assert people_by_id[1]["quality"]["frontal"] > people_by_id[2]["quality"]["frontal"] + 35.0
+    assert people_by_id[1]["quality"]["composite"] > people_by_id[2]["quality"]["composite"]
 
     # Verify PNG files exist on disk in `<video-filename>-<unique-suffix>/`
     saved_dir = cfg.local_storage_dir / folder_name
@@ -195,6 +200,8 @@ def test_fastapi_upload_and_sse_stream_end_to_end(tmp_path: Path) -> None:
     assert (saved_dir / "person_01_face_crop.png").exists()
     assert (saved_dir / "person_02_full_frame.png").exists()
     assert (saved_dir / "person_02_face_crop.png").exists()
+    assert (saved_dir / "person_03_full_frame.png").exists()
+    assert (saved_dir / "person_03_face_crop.png").exists()
 
     # Verify frontend index.html and static assets are served
     index_resp = client.get("/")

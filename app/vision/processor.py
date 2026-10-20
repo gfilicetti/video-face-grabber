@@ -88,9 +88,11 @@ class VideoFaceProcessor:
         detector: InsightFaceDetector | Callable[[np.ndarray], list[DetectedFace]],
         storage_service: StorageService,
         sample_fps: float = 3.0,
-        similarity_threshold: float = 0.42,
-        min_face_confidence: float = 0.60,
+        similarity_threshold: float = 0.40,
+        min_face_confidence: float = 0.65,
         min_face_size_px: int = 44,
+        min_sharpness_score: float = 0.0,
+        require_forward_facing: bool = False,
         min_frontal_score: float = 65.0,
         max_yaw_asymmetry: float = 0.42,
         max_roll_degrees: float = 28.0,
@@ -105,6 +107,8 @@ class VideoFaceProcessor:
         self.similarity_threshold = similarity_threshold
         self.min_face_confidence = min_face_confidence
         self.min_face_size_px = min_face_size_px
+        self.min_sharpness_score = min_sharpness_score
+        self.require_forward_facing = require_forward_facing
         self.min_frontal_score = min_frontal_score
         self.max_yaw_asymmetry = max_yaw_asymmetry
         self.max_roll_degrees = max_roll_degrees
@@ -188,8 +192,10 @@ class VideoFaceProcessor:
                             min_nose_ratio=self.min_nose_ratio,
                             max_nose_ratio=self.max_nose_ratio,
                         )
-                        # Reject side-looking, downward-looking, or heavily blurred faces
-                        if not quality.is_forward_facing or quality.sharpness_score < 35.0:
+                        # Keep all detected faces/heads (even profile or angled) unless strict mode or sharpness floor is configured
+                        if self.require_forward_facing and not quality.is_forward_facing:
+                            continue
+                        if quality.sharpness_score < self.min_sharpness_score:
                             continue
 
                         update_res = tracker.update(

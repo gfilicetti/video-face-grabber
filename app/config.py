@@ -18,9 +18,11 @@ class Settings(BaseSettings):
 
     # Video & Face Pipeline tuning
     frame_sample_fps: float = 3.0
-    similarity_threshold: float = 0.42
-    min_face_confidence: float = 0.60
+    similarity_threshold: float = 0.40
+    min_face_confidence: float = 0.65
     min_face_size_px: int = 44
+    min_sharpness_score: float = 0.0
+    require_forward_facing: bool = False
     min_frontal_score: float = 65.0
     max_yaw_asymmetry: float = 0.42
     max_roll_degrees: float = 28.0

@@ -90,31 +90,30 @@ def assess_frontal_pose(
     eye_dx = right_eye[0] - left_eye[0]
     eye_dy = right_eye[1] - left_eye[1]
     interocular = float(np.hypot(eye_dx, eye_dy))
-    # Eyes must be horizontally separated in anatomical order (not profile-collapsed)
-    if interocular < 4.0 or eye_dx <= 2.0:
-        return FacePoseAssessment(
-            frontal_score=0.0,
-            yaw_asymmetry=1.0,
-            roll_degrees=90.0,
-            pitch_deviation=1.0,
-            is_forward_facing=False,
-        )
 
     # 1. Roll penalty: head tilt angle between eyes
-    roll_deg = abs(float(np.degrees(np.arctan2(eye_dy, eye_dx))))
+    roll_deg = abs(float(np.degrees(np.arctan2(eye_dy, max(1.0, abs(eye_dx))))))
     roll_score = float(np.clip(1.0 - (roll_deg / 45.0), 0.0, 1.0))
 
-    # 2. Yaw penalty: horizontal symmetry of nose AND mouth midpoint relative to eye span
-    eye_mid_x = 0.5 * (left_eye[0] + right_eye[0])
-    half_eye_span = 0.5 * eye_dx
-    nose_yaw_offset = abs(nose[0] - eye_mid_x) / half_eye_span
+    # 2. Yaw penalty: horizontal symmetry of nose AND mouth midpoint relative to eye span.
+    # For severe side profiles (eye_dx <= 2.0 or interocular < 4.0), assign maximum yaw asymmetry
+    # so frontal_score smoothly bottoms out near 0..15 (worst score for profile, best for square frontal).
+    if interocular < 4.0 or eye_dx <= 2.0:
+        yaw_asymmetry = 3.0
+        yaw_score = 0.0
+    else:
+        eye_mid_x = 0.5 * (left_eye[0] + right_eye[0])
+        half_eye_span = max(2.0, 0.5 * eye_dx)
+        nose_yaw_offset = abs(nose[0] - eye_mid_x) / half_eye_span
 
-    mouth_mid_x = 0.5 * (left_mouth[0] + right_mouth[0])
-    mouth_yaw_offset = abs(mouth_mid_x - eye_mid_x) / half_eye_span
+        mouth_mid_x = 0.5 * (left_mouth[0] + right_mouth[0])
+        mouth_yaw_offset = abs(mouth_mid_x - eye_mid_x) / half_eye_span
 
-    # Combine nose and mouth horizontal shift so turning to the side is caught reliably
-    yaw_asymmetry = float(0.75 * nose_yaw_offset + 0.25 * mouth_yaw_offset)
-    yaw_score = float(np.clip(1.0 - yaw_asymmetry, 0.0, 1.0))
+        # Combine nose and mouth horizontal shift
+        yaw_asymmetry = float(0.75 * nose_yaw_offset + 0.25 * mouth_yaw_offset)
+        # Exponential decay gives 1.0 for dead-center square faces (yaw=0),
+        # ~0.78 for slight turn (yaw=0.25), ~0.37 for 45-deg turn (yaw=1.0), and ~0.08..0.15 for profile (yaw>=2.0)
+        yaw_score = float(np.clip(np.exp(-1.0 * yaw_asymmetry), 0.0, 1.0))
 
     # 3. Pitch penalty: vertical placement of nose between eye line and mouth line
     eye_mid_y = 0.5 * (left_eye[1] + right_eye[1])
@@ -130,18 +129,18 @@ def assess_frontal_pose(
         )
 
     nose_ratio = (nose[1] - eye_mid_y) / eye_to_mouth
-    # Ideal forward-facing nose vertical ratio is ~0.48 between eyes and mouth;
+    # Ideal forward-facing nose vertical ratio is ~0.46..0.48 between eyes and mouth;
     # >= 0.60 indicates the head is pitched downward (looking down).
-    pitch_deviation = abs(nose_ratio - 0.48) / 0.25
+    pitch_deviation = abs(nose_ratio - 0.47) / 0.25
     pitch_score = float(np.clip(1.0 - pitch_deviation, 0.0, 1.0))
 
     combined = round(
-        float(np.clip((0.50 * yaw_score + 0.25 * roll_score + 0.25 * pitch_score) * 100.0, 0.0, 100.0)),
+        float(np.clip((0.60 * yaw_score + 0.25 * pitch_score + 0.15 * roll_score) * 100.0, 0.0, 100.0)),
         2,
     )
 
     # Nose must remain strictly between the left and right eyes and within yaw/roll/pitch tolerances
-    nose_between_eyes = left_eye[0] < nose[0] < right_eye[0]
+    nose_between_eyes = eye_dx > 2.0 and (left_eye[0] < nose[0] < right_eye[0])
     pitch_within_bounds = min_nose_ratio <= nose_ratio <= max_nose_ratio
     is_forward = bool(
         nose_between_eyes
@@ -172,7 +171,7 @@ def compute_composite_quality(
     min_nose_ratio: float = 0.36,
     max_nose_ratio: float = 0.59,
 ) -> FaceQualityMetrics:
-    """Compute overall face quality (0..100) combining sharpness, frontal pose, confidence, and size."""
+    """Compute overall face quality (0..100) prioritizing square frontal pose and sharpness."""
     sharpness_score, raw_lap = compute_laplacian_sharpness(face_bgr)
     pose = assess_frontal_pose(
         kps,
@@ -193,11 +192,14 @@ def compute_composite_quality(
     relative_area = face_area / frame_area
     size_score = round(float(np.clip((relative_area / 0.06) * 100.0, 0.0, 100.0)), 2)
 
+    # Frontalness is weighted highest (45%) so a square-to-camera frame always beats a profile frame
+    # of the same person, while profile-only individuals are still captured and ranked by their
+    # least-angled, sharpest sighting.
     composite = (
-        0.35 * sharpness_score
-        + 0.30 * frontal_score
-        + 0.20 * confidence_score
-        + 0.15 * size_score
+        0.45 * frontal_score
+        + 0.30 * sharpness_score
+        + 0.15 * confidence_score
+        + 0.10 * size_score
     )
     return FaceQualityMetrics(
         composite_score=round(composite, 2),

@@ -2,7 +2,7 @@
 
 **Video Face Grab** is a streaming computer-vision web application built with **FastAPI**, **OpenCV**, **InsightFace (RetinaFace + ArcFace ONNX)**, and **Google Cloud Storage (GCS)**, designed to run statelessly on **Google Cloud Run**.
 
-Given an uploaded video file, the system scans frames at a configurable rate, detects every discernable forward-facing human face, clusters sightings by 512-dimensional facial identity embeddings so each person is represented exactly once, continuously upgrades each person's candidate frame whenever a clearer shot appears, and exports lossless `.png` files of both the **full video frame** and **padded face crop** to a dedicated GCS folder (`gs://<bucket>/<video-stem>-<unique-number-suffix>/`).
+Given an uploaded video file, the system scans frames at a configurable rate, detects every discernable human face/head (including individuals only ever seen in side-profile), clusters sightings by 512-dimensional facial identity embeddings so each person is represented exactly once, continuously upgrades each person's candidate frame whenever a more frontal, clearer shot appears, and exports lossless `.png` files of both the **full video frame** and **padded face crop** to a dedicated GCS folder (`gs://<bucket>/<video-stem>-<unique-number-suffix>/`).
 
 ---
 
@@ -108,60 +108,55 @@ Each sampled BGR frame is analyzed by `InsightFaceDetector` (`app/vision/process
 
 #### Pre-Filter Guards
 Before scoring pose or clustering, a candidate detection is immediately discarded if:
-- `det_score < MIN_FACE_CONFIDENCE` (default `0.60`), or
+- `det_score < MIN_FACE_CONFIDENCE` (default `0.65`), or
 - $\min(\text{width}, \text{height}) < \text{MIN\_FACE\_SIZE\_PX}$ (default `44 px`).
 
 ---
 
-### Step 4: Forward-Facing 3D Pose Gate (`assess_frontal_pose`)
-To ensure only forward-facing faces (with tolerance for marginally turned faces) are captured—and that side-profile or downward-looking faces are skipped—`assess_frontal_pose()` in `app/vision/quality.py` evaluates 3D head orientation from the 5 keypoints:
+### Step 4: Continuous 3D Frontal Pose Scoring (`assess_frontal_pose`)
+To ensure **every person in the video is captured** (even someone only ever seen in profile) while still guaranteeing that each person's **most frontal, square-to-the-camera shot** wins when multiple sightings exist, `assess_frontal_pose()` in `app/vision/quality.py` computes a continuous `frontal_score` (`0..100`) from the 5 keypoints:
 
 ```mermaid
 flowchart TD
     KPS["5 Facial Landmarks (kps)\nLeft Eye, Right Eye, Nose, Left Mouth, Right Mouth"] --> EyeGeo["Inter-Ocular Vector\ndx = Rx - Lx, dy = Ry - Ly\ninter_ocular = hypot(dx, dy)"]
-    EyeGeo --> Yaw["1. Horizontal Yaw Asymmetry\nnose_yaw = |nose_x - eye_mid_x| / (inter_ocular / 2)\nmouth_yaw = |mouth_mid_x - eye_mid_x| / (inter_ocular / 2)\nyaw_asymmetry = 0.75 * nose_yaw + 0.25 * mouth_yaw"]
-    EyeGeo --> Roll["2. Head Roll Angle\nroll_deg = |degrees(atan2(dy, dx))|"]
-    EyeGeo --> Pitch["3. Vertical Pitch (Nose Ratio)\nnose_ratio = (nose_y - eye_mid_y) / eye_to_mouth_y\npitch_dev = |nose_ratio - 0.48|"]
-    Yaw & Roll & Pitch --> Gate{"Forward-Facing Gate\n• Lx < nose_x < Rx\n• 0.36 <= nose_ratio <= 0.59\n• yaw_asymmetry <= 0.42\n• roll_deg <= 28.0°\n• frontal_score >= 65.0"}
-    Gate -- "Pass" --> Accept["is_forward_facing = True"]
-    Gate -- "Fail" --> Reject["Skip Sighting"]
+    EyeGeo --> Yaw["1. Continuous Yaw Score\nnose_yaw = |nose_x - eye_mid_x| / (dx / 2)\nmouth_yaw = |mouth_mid_x - eye_mid_x| / (dx / 2)\nyaw_asymmetry = 0.75 * nose_yaw + 0.25 * mouth_yaw\nyaw_score = exp(-1.0 * yaw_asymmetry)"]
+    EyeGeo --> Roll["2. Head Roll Score\nroll_deg = |degrees(atan2(dy, max(1, |dx|)))|\nroll_score = clip(1 - roll_deg / 45, 0, 1)"]
+    EyeGeo --> Pitch["3. Vertical Pitch Score\nnose_ratio = (nose_y - eye_mid_y) / eye_to_mouth_y\npitch_dev = |nose_ratio - 0.47| / 0.25\npitch_score = clip(1 - pitch_dev, 0, 1)"]
+    Yaw & Roll & Pitch --> Score["Continuous Frontal Score (0..100)\nfrontal_score = (0.60 * yaw_score + 0.25 * pitch_score + 0.15 * roll_score) * 100"]
 ```
 
-1. **Horizontal Yaw Asymmetry (`yaw_asymmetry`)**:
-   Measures how far off-center the nose tip and mouth midpoint sit relative to the midpoint between the eyes, normalized by the half inter-ocular distance:
-   $$\text{yaw\_asymmetry} = 0.75 \cdot \frac{|x_{\text{nose}} - x_{\text{eye\_mid}}|}{d_{\text{eyes}} / 2} + 0.25 \cdot \frac{|x_{\text{mouth\_mid}} - x_{\text{eye\_mid}}|}{d_{\text{eyes}} / 2}$$
-   - `0.00`: Dead-center frontal gaze.
-   - `0.25–0.38`: Marginally turned ($15^\circ\text{–}22^\circ$ yaw) — **accepted**.
-   - `> 0.42`: Turned significantly to the side — **rejected**.
+1. **Horizontal Yaw Asymmetry (`yaw_asymmetry`) & Exponential Decay**:
+   Measures how far off-center the nose tip and mouth midpoint sit relative to the midpoint between the eyes, normalized by the half horizontal eye span:
+   $$\text{yaw\_asymmetry} = 0.75 \cdot \frac{|x_{\text{nose}} - x_{\text{eye\_mid}}|}{d_{\text{eyes},x} / 2} + 0.25 \cdot \frac{|x_{\text{mouth\_mid}} - x_{\text{eye\_mid}}|}{d_{\text{eyes},x} / 2}$$
+   $$\text{yaw\_score} = \exp(-1.0 \cdot \text{yaw\_asymmetry})$$
+   - `0.00` (Square with camera): `yaw_score = 1.00` (Best score).
+   - `0.25–0.38` (Slight turn): `yaw_score ≈ 0.68–0.78`.
+   - `1.50–3.00+` (Side profile): `yaw_score ≈ 0.05–0.22` (Worst score, but still retained so profile-only individuals are captured).
 
 2. **Head Roll Tilt (`roll_degrees`)**:
-   $$\text{roll\_deg} = \left|\text{degrees}(\text{atan2}(y_{R} - y_{L}, x_{R} - x_{L}))\right|$$
-   - Must satisfy `roll_deg <= 28.0°`.
+   $$\text{roll\_deg} = \left|\text{degrees}(\text{atan2}(y_{R} - y_{L}, \max(1, |x_{R} - x_{L}|)))\right|$$
 
-3. **Vertical Pitch Bounds (`min_nose_ratio` / `max_nose_ratio`)**:
-   When a person looks straight ahead, the vertical ratio of the nose tip between the eye midpoint and mouth midpoint is approximately `0.48`:
+3. **Vertical Pitch Ratio (`pitch_deviation`)**:
+   When a person looks straight ahead, the vertical ratio of the nose tip between the eye midpoint and mouth midpoint is approximately `0.47`:
    $$\text{nose\_ratio} = \frac{y_{\text{nose}} - y_{\text{eye\_mid}}}{y_{\text{mouth\_mid}} - y_{\text{eye\_mid}}}$$
-   - When looking steeply downward (e.g., reading notes at a podium), foreshortening pushes `nose_ratio` $\ge 0.60$.
-   - When looking steeply upward, `nose_ratio` drops $< 0.36$.
-   - Enforcing `0.36 <= nose_ratio <= 0.59` cleanly rejects downward- and upward-pitched faces before they can corrupt identity clusters.
+   Looking downward (`nose_ratio >= 0.60`) or upward (`nose_ratio < 0.36`) increases `pitch_deviation` and lowers `pitch_score`.
 
 4. **Combined Frontal Score (`0..100`)**:
-   $$\text{frontal\_score} = 0.50 \cdot \text{yaw\_score} + 0.25 \cdot \text{roll\_score} + 0.25 \cdot \text{pitch\_score}$$
-   A face must satisfy all geometric bounds **and** `frontal_score >= 65.0`, plus a minimum sharpness floor (`sharpness_score >= 35.0`), to enter clustering.
+   $$\text{frontal\_score} = \left(0.60 \cdot \text{yaw\_score} + 0.25 \cdot \text{pitch\_score} + 0.15 \cdot \text{roll\_score}\right) \times 100$$
 
 ---
 
 ### Step 5: Composite Clarity Scoring (`compute_composite_quality`)
-Every forward-facing sighting is assigned a `composite_score` $\in [0, 100]$ in `app/vision/quality.py`:
+Every sighting is assigned a `composite_score` $\in [0, 100]$ in `app/vision/quality.py` with **Frontal Pose weighted highest (`45%`)** so that square-to-the-camera shots always beat profile or downward-pitched shots of the same person:
 
-$$\text{Composite Clarity} = 0.35 \cdot S_{\text{sharpness}} + 0.30 \cdot S_{\text{frontal}} + 0.20 \cdot S_{\text{confidence}} + 0.15 \cdot S_{\text{size}}$$
+$$\text{Composite Clarity} = 0.45 \cdot S_{\text{frontal}} + 0.30 \cdot S_{\text{sharpness}} + 0.15 \cdot S_{\text{confidence}} + 0.10 \cdot S_{\text{size}}$$
 
 | Component | Weight | Calculation |
 | :--- | :---: | :--- |
-| **Sharpness ($S_{\text{sharpness}}$)** | `35%` | Resizes the tightly cropped face to $160 \times 160$ grayscale, applies a $3 \times 3$ Laplacian filter (`cv2.Laplacian`), computes pixel variance, and maps it log-linearly (`np.log1p`) to $[0, 100]$. |
-| **Frontal Pose ($S_{\text{frontal}}$)** | `30%` | Combined yaw, roll, and pitch symmetry score from `assess_frontal_pose()`. |
-| **Detection Confidence ($S_{\text{confidence}}$)** | `20%` | RetinaFace detection probability scaled to $[0, 100]$. |
-| **Relative Frame Size ($S_{\text{size}}$)** | `15%` | Ratio of face bounding-box area to total video frame area; reaches `100` when the face occupies $\ge 6\%$ of the frame. |
+| **Frontal Pose ($S_{\text{frontal}}$)** | `45%` | Continuous 3D yaw, pitch, and roll score from `assess_frontal_pose()` (`100` = dead-center square to camera; lowest = side profile). |
+| **Sharpness ($S_{\text{sharpness}}$)** | `30%` | Resizes the tightly cropped face to $128 \times 128$ grayscale, applies a $3 \times 3$ Laplacian filter (`cv2.Laplacian`), and maps pixel variance to $[0, 100]$. |
+| **Detection Confidence ($S_{\text{confidence}}$)** | `15%` | RetinaFace detection probability scaled to $[0, 100]$. |
+| **Relative Frame Size ($S_{\text{size}}$)** | `10%` | Ratio of face bounding-box area to total video frame area; reaches `100` when the face occupies $\ge 6\%$ of the frame. |
 
 ---
 
@@ -175,7 +170,7 @@ $$\text{Composite Clarity} = 0.35 \cdot S_{\text{sharpness}} + 0.30 \cdot S_{\te
    
    When a new face embedding $\mathbf{e}$ arrives, its similarity to cluster $C_i$ is:
    $$\text{sim}(\mathbf{e}, C_i) = \max\left(\mathbf{e} \cdot C_i.\text{centroid\_embedding},\; \mathbf{e} \cdot C_i.\text{best\_embedding}\right)$$
-   If the highest similarity across existing clusters is $\ge \text{SIMILARITY\_THRESHOLD}$ (default `0.42`), the sighting is assigned to that cluster; otherwise, a new `IdentityCluster` is created.
+   If the highest similarity across existing clusters is $\ge \text{SIMILARITY\_THRESHOLD}$ (default `0.40`), the sighting is assigned to that cluster; otherwise, a new `IdentityCluster` is created.
 
 2. **Best-Frame Replacement**:
    Whenever a matched sighting's `composite_score` exceeds the cluster's current `best_quality.composite_score`:
