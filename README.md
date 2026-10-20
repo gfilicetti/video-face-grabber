@@ -151,3 +151,17 @@ agents-cli publish gemini-enterprise \
 | `GET` | `/api/jobs/{job_id}/stream` | Server-Sent Events (`text/event-stream`) feed of frame progress, face discoveries, clarity upgrades, and saved GCS URIs. |
 | `GET` | `/api/jobs/{job_id}` | Returns a JSON snapshot of job status, discovered people, and completion summary. |
 | `GET` | `/api/storage/{folder_name}/{file_name}` | Streams saved `.png` files from GCS (or local fallback) for in-browser full-frame inspection and download. |
+
+---
+
+## License & Third-Party Model Weights
+
+- **Source Code**: Copyright 2026 Google LLC. Licensed under the [Apache License, Version 2.0](./LICENSE).
+- **Third-Party Pretrained Models**: While the [`insightface`](https://github.com/deepinsight/insightface) Python package is MIT-licensed, the default `buffalo_sc` ONNX model weights downloaded at container build/runtime are distributed by InsightFace for **non-commercial research purposes only**. For commercial deployments, replace `INSIGHTFACE_MODEL_NAME` or the detector backend in [`app/vision/processor.py`](./app/vision/processor.py) with commercially licensed model weights.
+- **Contributing & Security**: See [`CONTRIBUTING.md`](./CONTRIBUTING.md), [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md), and [`SECURITY.md`](./SECURITY.md).
+
+---
+
+## Disclaimer
+
+This is not an officially supported Google product. This project is not eligible for the [Google Open Source Software Vulnerability Rewards Program](https://bughunters.google.com/open-source-security).
