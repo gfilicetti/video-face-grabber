@@ -16,20 +16,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Install runtime dependencies from public PyPI compatible with Linux x86_64 Python 3.11
+# Install runtime dependencies compatible with Linux x86_64 Python 3.11 and google-adk 2.x
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir \
-    "fastapi>=0.110.0" \
-    "uvicorn[standard]>=0.29.0" \
+    "fastapi>=0.133.0,<0.143.0" \
+    "opentelemetry-api>=1.39.0,<=1.42.1" \
+    "opentelemetry-sdk>=1.39.0,<=1.42.1" \
+    "uvicorn[standard]>=0.34.0,<1.0.0" \
     "python-multipart>=0.0.9" \
     "python-dotenv>=1.0.0" \
     "numpy<2.0.0" \
     "Pillow>=10.0.0" \
     "google-cloud-storage>=2.16.0" \
-    "google-adk>=1.0.0" \
+    "google-adk>=2.7.0" \
     "google-cloud-aiplatform[adk,agent_engines]>=1.129.0" \
-    "a2a-sdk[http-server]>=0.2.0" \
-    "pydantic>=2.7.0" \
+    "a2a-sdk[http-server]>=1.0.0,<2.0.0" \
+    "pydantic>=2.12.0,<3.0.0" \
     "pydantic-settings>=2.2.0" \
     "onnxruntime>=1.17.0" \
     "insightface>=0.7.3" \
